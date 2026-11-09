@@ -76,17 +76,17 @@ Write-Host 'Preparing local Python 3.12...'
 if ($LASTEXITCODE -ne 0) { throw 'Could not prepare local Python 3.12. Check your connection and retry.' }
 
 Install-Torch $backend
+Write-Host 'Installing the demo dependencies...'
+& $uvExe --no-config --quiet pip install --python $pythonExe --index-url 'https://pypi.org/simple' -r (Join-Path $PSScriptRoot 'requirements.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Could not install the demo dependencies.' }
 if ($backend -eq 'cu124') {
-    & $pythonExe -c 'import torch; torch.ones(1, device="cuda").item()'
+    & $pythonExe -c 'import torch; torch.ones(1).cuda().item()'
     if ($LASTEXITCODE -ne 0) {
         if ($Device -eq 'GPU') { throw 'CUDA could not run on this computer. Retry with -Device CPU.' }
         Write-Warning 'CUDA could not run on this computer. Installing the CPU version.'
         Install-Torch 'cpu'
     }
 }
-Write-Host 'Installing the demo dependencies...'
-& $uvExe --no-config --quiet pip install --python $pythonExe --index-url 'https://pypi.org/simple' -r (Join-Path $PSScriptRoot 'requirements.txt')
-if ($LASTEXITCODE -ne 0) { throw 'Could not install the demo dependencies.' }
 & $pythonExe (Join-Path $PSScriptRoot 'engine.py') --diagnose
 if ($LASTEXITCODE -ne 0) { throw 'Hardware diagnostics failed.' }
 Set-Content -LiteralPath $ready -Value 'ready' -Encoding ASCII
