@@ -2,19 +2,23 @@
 
 Text description → AudioLDM → WAV clip. A Python interface built with Gradio and accessed through your local browser. No Conda or model training is required.
 
-## Windows with NVIDIA
+## Windows setup
 
-Requirements: 64-bit Python 3.12 and an NVIDIA driver compatible with CUDA 12.4. You do not need to install the CUDA Toolkit separately to use these PyTorch wheels.
-
-From the folder containing install.ps1 and start.ps1, in PowerShell:
+On each x64 Windows computer, open PowerShell in the folder containing `start.ps1` and run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-The application opens [the local interface](http://127.0.0.1:7860). To stop it, press Ctrl+C in its terminal.
+On a fresh copy, the launcher downloads a local Python 3.12 runtime and installs the required packages. It stores the environment under `.cache/runtime`. The first setup needs internet access and disk space for the runtime and packages. Later launches reuse the local environment.
 
+The installer selects GPU mode for compatible NVIDIA hardware and uses CPU on other systems. To set up explicitly for CPU, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Device CPU
+```
+
+Use `-Device GPU` to request the CUDA 12.4 build for a compatible NVIDIA GPU. The application opens [the local interface](http://127.0.0.1:7860). To stop it, press Ctrl+C in the terminal.
 
 ## Choosing a model
 
@@ -22,21 +26,23 @@ Choose **Small v2**, **Medium Full**, or **Large Full** in the **Model** dropdow
 
 The AudioLDM source clone contains the code. The demo downloads the pretrained weights for the selected model from Hugging Face and reuses its local cache. Medium Full requires about 2.6 GB and Large Full about 3.9 GB of downloads before cache reuse.
 
-To download Medium Full or Large Full ahead of time, run this from the folder containing `engine.py` in Git Bash:
+To download a model before presenting, run its command in PowerShell from the demo folder after setup:
 
-```bash
-./.venv-audioldm/Scripts/python.exe engine.py --model medium --download-only
-./.venv-audioldm/Scripts/python.exe engine.py --model large --download-only
+```powershell
+.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model small --download-only
+.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model medium --download-only
+.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model large --download-only
 ```
 
-If your virtual environment is in the parent directory, use `../.venv-audioldm/Scripts/python.exe` instead. Start the demo and choose **GPU low memory** for the first test. On GPUs with 4 GB of VRAM or less, Large Full moves smaller parts of the model between RAM and GPU to reduce VRAM use. This can increase generation time.
+With its weights cached, the demo can generate audio offline. For an older environment, use `.\.venv-audioldm\Scripts\python.exe` or run `install.ps1` to set up the managed environment.
 
+On GPUs with 4 GB of VRAM or less, Large Full uses finer-grained CPU offloading in **GPU low memory** mode. This can increase generation time.
 
 ## Diagnostics and command-line testing
 
 ```powershell
-.\.venv-audioldm\Scripts\python.exe .\engine.py --diagnose
-.\.venv-audioldm\Scripts\python.exe .\engine.py --prompt "A dog barking in a quiet park" --steps 25 --duration 5
+.\.cache\runtime\venv\Scripts\python.exe .\engine.py --diagnose
+.\.cache\runtime\venv\Scripts\python.exe .\engine.py --prompt "A dog barking in a quiet park" --steps 25 --duration 5
 ```
 
 Add `--repeat 2` to measure the first generation and another generation with the model already loaded in the same process.
@@ -45,16 +51,6 @@ Each generation saves a WAV and a JSON report in `audioldm_demo/results`. The re
 
 ## Running on other computers
 
-Copy `audioldm_demo` into a working folder and run `install.ps1` there. Create a new virtual environment on each computer. You can copy the model cache to avoid downloading the weights again.
+Clone or copy the demo source and run `start.ps1` on each Windows computer. Let each computer prepare its own environment. You can copy `.cache/huggingface` to reuse downloaded weights. For a live presentation, complete setup and test one generation on the presentation computer beforehand.
 
-For a CPU-only installation:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Device CPU
-```
-
-Select CPU in the interface or add `--mode CPU` to the benchmark command. Generation may take considerably longer.
-
-On Linux with Python 3.12, create an environment with `python3.12 -m venv .venv-audioldm`, activate it, install PyTorch from the appropriate index, and then run `pip install -r audioldm_demo/requirements.txt`. Start the application with `python audioldm_demo/demo.py`.
-
-
+On Linux with Python 3.12, create an environment with `python3.12 -m venv .venv-audioldm`, activate it, install PyTorch from the appropriate index, and then run `pip install -r requirements.txt`. Start the application with `python demo.py`.
