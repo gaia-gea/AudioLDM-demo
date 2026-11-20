@@ -10,7 +10,7 @@ engine = Generator()
 
 
 def generate(prompt, mode, duration, steps, seed, model, progress=gr.Progress()):
-    progress(0, desc=f"Preparing {MODELS[model][0]} (downloads missing files on first use)…")
+    progress(0, desc=f"Preparing {MODELS[model].label} (downloads missing files on first use)…")
     try:
         wav, report_path, report = engine.generate(
             prompt, mode, duration, steps, seed, model=model,
@@ -23,7 +23,8 @@ def generate(prompt, mode, duration, steps, seed, model, progress=gr.Progress())
         traceback.print_exc()
         raise gr.Error(f"Could not generate audio: {exc}") from exc
     summary = (
-        f"**Model:** {MODELS[model][0]} · "
+        f"**Model:** {MODELS[model].label} · "
+        f"**Processing:** {report['mode']} · "
         f"**Generation:** {report['inference_s']} s · "
         f"**Model loading/downloading:** {report['load_s']} s · "
         f"**Peak VRAM allocated by PyTorch:** {report['peak_vram_allocated_gb']} GB\n\n"
@@ -36,23 +37,24 @@ def build_demo():
     info = hardware()
     with gr.Blocks(title="AudioLDM · Text to Sound") as demo:
         gr.Markdown("# Text to Sound\nDescribe a sound, generate a clip and listen to the result.")
-        prompt = gr.Textbox(label="Sound description", value="A dog barking in a quiet park", lines=3,
+        prompt = gr.Textbox(label="Sound description", value="A dog barking", lines=3,
                             info="Start with concrete descriptions in English. This generates sounds rather than reading text aloud.")
-        gr.Examples(examples=[["Rain falling on a window with distant thunder"],
-                              ["A dog barking in a quiet park"],
-                              ["Ocean waves breaking gently on a sandy beach"]], inputs=prompt)
+        gr.Examples(examples=[["A metal bell ringing repeatedly"],
+                              ["A crowd applauding indoors"],
+                              ["A dog barking"],
+                              ["Steady heavy rain falling on a roof"]], inputs=prompt)
         model = gr.Dropdown(
-            choices=[(label, key) for key, (label, _, _, _) in MODELS.items()],
+            choices=[(config.label, key) for key, config in MODELS.items()],
             value=DEFAULT_MODEL,
             label="Model",
-            info="Each model downloads its weights on first use. Large Full needs more memory.",
+            info="The selected model downloads its weights on first use.",
         )
-        mode = gr.Dropdown(choices=["GPU low memory", "GPU direct", "CPU"],
-                           value="GPU low memory" if info["cuda_available"] else "CPU", label="Processing mode",
-                           info="Low memory moves model weights between RAM and GPU. Direct keeps the model on the GPU. CPU can be slow.")
+        mode = gr.Dropdown(choices=["Auto", "GPU low memory", "GPU direct", "CPU"],
+                           value="Auto", label="Processing mode",
+                           info="Auto selects the processing mode for this computer. You can also select a mode manually.")
         with gr.Row():
             duration = gr.Slider(2, 10, value=5, step=0.5, label="Sound duration (seconds)")
-            steps = gr.Slider(10, 100, value=25, step=5, label="Generation steps")
+            steps = gr.Slider(10, 200, value=25, step=5, label="Generation steps")
             seed = gr.Number(value=42, minimum=0, maximum=2147483647, precision=0, label="Seed")
         button = gr.Button("Generate sound", variant="primary")
         audio = gr.Audio(label="Result", type="filepath", interactive=False)

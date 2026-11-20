@@ -9,6 +9,8 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 
 import json
+import gc
+from dataclasses import dataclass
 import platform
 import time
 import uuid
@@ -18,29 +20,40 @@ import numpy as np
 import psutil
 import soundfile as sf
 import torch
-from diffusers import AudioLDMPipeline
+from diffusers import AudioLDMPipeline, AudioLDM2Pipeline
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import LocalEntryNotFoundError
 
-DEFAULT_MODEL = "small"
+@dataclass(frozen=True)
+class ModelConfig:
+    """Checkpoint settings shared by loading, generation, and the interface."""
+    label: str
+    repo_id: str
+    revision: str
+    pipeline: type = AudioLDMPipeline
+    use_safetensors: bool = True
+    guidance_scale: float = 2.5
+
+
+DEFAULT_MODEL = "audioldm2"
 MODELS = {
-    "small": (
-        "Small v2",
-        "cvssp/audioldm-s-full-v2",
+    "small": ModelConfig(
+        "Small v2", "cvssp/audioldm-s-full-v2",
         "feeb3d14203495a4b6ac0893cbdedb2159b4819c",
-        True,
     ),
-    "medium": (
-        "Medium Full",
-        "cvssp/audioldm-m-full",
+    "medium": ModelConfig(
+        "Medium Full", "cvssp/audioldm-m-full",
         "9d4998f93dfdafd050695fc82a4c8773ade7bd88",
-        True,
     ),
-    "large": (
-        "Large Full",
-        "cvssp/audioldm-l-full",
+    "large": ModelConfig(
+        "Large Full", "cvssp/audioldm-l-full",
         "318f5a31753ef5c81552ccdd3eabcd46f32d99ae",
-        False,
+        use_safetensors=False,
+    ),
+    "audioldm2": ModelConfig(
+        "AudioLDM 2", "cvssp/audioldm2",
+        "c8e7e189d324425c05c4c2f81214041ef4107983",
+        pipeline=AudioLDM2Pipeline, guidance_scale=3.5,
     ),
 }
 RESULTS = ROOT / "results"
@@ -64,15 +77,27 @@ PYTORCH_WEIGHTS = (
 )
 
 
+AUDIOLDM2_FILES = MODEL_FILES + SAFETENSORS_WEIGHTS + (
+    "feature_extractor/preprocessor_config.json",
+    "language_model/config.json", "language_model/model.safetensors",
+    "projection_model/config.json", "projection_model/diffusion_pytorch_model.safetensors",
+    "text_encoder_2/config.json", "text_encoder_2/model.safetensors",
+    "tokenizer/special_tokens_map.json", "tokenizer/tokenizer.json",
+    "tokenizer_2/special_tokens_map.json", "tokenizer_2/spiece.model",
+    "tokenizer_2/tokenizer.json", "tokenizer_2/tokenizer_config.json",
+)
+
+
 def prepare_model(model=DEFAULT_MODEL):
     """Fetch explicit Hub paths, avoiding Diffusers' Windows download filters.
 
     Check cache first, so a complete model can also be used without internet.
     Failed/partial downloads are resumed by huggingface_hub on the next attempt.
     """
-    _, repo_id, revision, use_safetensors = MODELS[model]
-    weights = SAFETENSORS_WEIGHTS if use_safetensors else PYTORCH_WEIGHTS
-    required_files = MODEL_FILES + weights
+    config = MODELS[model]
+    repo_id, revision = config.repo_id, config.revision
+    weights = SAFETENSORS_WEIGHTS if config.use_safetensors else PYTORCH_WEIGHTS
+    required_files = AUDIOLDM2_FILES if model == "audioldm2" else MODEL_FILES + weights
     model_dir = None
     for filename in required_files:
         try:
@@ -109,6 +134,40 @@ def hardware():
     return info
 
 
+def resolve_mode(mode):
+    """Choose a processing mode once, using GPU capacity rather than free memory."""
+    mode = {"GPU ahorro": "GPU low memory", "GPU directa": "GPU direct"}.get(mode, mode)
+    if mode == "Auto":
+        mode = "CPU"
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            mode = "GPU direct" if vram_gb >= 8 else "GPU low memory"
+    if mode not in ("GPU low memory", "GPU direct", "CPU"):
+        raise ValueError("Invalid processing mode.")
+    if mode != "CPU" and not torch.cuda.is_available():
+        raise RuntimeError("PyTorch cannot detect CUDA. Select CPU or run install.ps1.")
+    return mode
+
+
+def configure_memory(pipe, mode, model):
+    """Use direct execution or the low-memory setup needed by a smaller GPU."""
+    if mode != "GPU low memory":
+        pipe.to("cpu" if mode == "CPU" else "cuda")
+        return
+
+    if model == "audioldm2":
+        # CLAP calls get_text_features, bypassing the offload hook on forward.
+        pipe._exclude_from_cpu_offload = ["text_encoder"]
+        pipe.model_cpu_offload_seq = (
+            "text_encoder_2->projection_model->language_model->unet->vae->vocoder"
+        )
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    if model in ("large", "audioldm2") and vram_gb <= 4:
+        pipe.enable_sequential_cpu_offload()
+    else:
+        pipe.enable_model_cpu_offload()
+
+
 class Generator:
     def __init__(self):
         self.pipe = None
@@ -116,20 +175,15 @@ class Generator:
         self.model = None
 
     def load(self, mode, model=DEFAULT_MODEL):
-        # Keep old command-line mode names working for existing instructions.
-        mode = {"GPU ahorro": "GPU low memory", "GPU directa": "GPU direct"}.get(mode, mode)
+        mode = resolve_mode(mode)
         if model not in MODELS:
             raise ValueError("Invalid model selection.")
+        config = MODELS[model]
         if self.pipe is not None and self.mode == mode and self.model == model:
             return 0.0
-        if mode not in ("GPU low memory", "GPU direct", "CPU"):
-            raise ValueError("Invalid processing mode.")
-        if mode != "CPU" and not torch.cuda.is_available():
-            raise RuntimeError("PyTorch cannot detect CUDA. Check hardware diagnostics or select CPU.")
         if self.pipe is not None:
             # Hooks installed by accelerate must go away with the old pipeline.
             self.pipe = None
-            import gc
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -140,33 +194,27 @@ class Generator:
         gtx16 = mode != "CPU" and "GTX 16" in torch.cuda.get_device_name(0)
         dtype = torch.float32 if mode == "CPU" or gtx16 else torch.float16
         model_dir = prepare_model(model)
-        pipe = AudioLDMPipeline.from_pretrained(
-            str(model_dir), torch_dtype=dtype, use_safetensors=MODELS[model][3],
+        pipe = config.pipeline.from_pretrained(
+            str(model_dir), torch_dtype=dtype, use_safetensors=config.use_safetensors,
             low_cpu_mem_usage=True, local_files_only=True,
         )
-        if mode == "GPU low memory":
-            if model == "large" and torch.cuda.get_device_properties(0).total_memory <= 4 * 1024**3:
-                # Large's full U-Net leaves little VRAM for inference on a 4 GB GPU.
-                pipe.enable_sequential_cpu_offload()
-            else:
-                pipe.enable_model_cpu_offload()
-        else:
-            pipe.to("cpu" if mode == "CPU" else "cuda")
+        configure_memory(pipe, mode, model)
         self.pipe, self.mode, self.model = pipe, mode, model
         return time.perf_counter() - start
 
-    def generate(self, prompt, mode="GPU low memory", duration=5, steps=25, seed=42,
+    def generate(self, prompt, mode="Auto", duration=5, steps=25, seed=42,
                  progress_callback=None, *, model=DEFAULT_MODEL):
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("Enter a sound description.")
         duration, steps, seed = float(duration), int(steps), int(seed)
-        if not 2 <= duration <= 10 or not 10 <= steps <= 100:
-            raise ValueError("Use 2 to 10 seconds and 10 to 100 steps.")
+        if not 2 <= duration <= 10 or not 10 <= steps <= 200:
+            raise ValueError("Use 2 to 10 seconds and 10 to 200 steps.")
         if not 0 <= seed <= 2147483647:
             raise ValueError("Seed must be between 0 and 2147483647.")
         total_start = time.perf_counter()
         load_s = self.load(mode, model)
+        mode = self.mode
         gpu = mode != "CPU"
         if gpu:
             torch.cuda.synchronize()
@@ -178,10 +226,12 @@ class Generator:
             if progress_callback:
                 progress_callback(min((step + 1) / steps, 1))
 
+        config = MODELS[model]
+        guidance_scale = config.guidance_scale
         with torch.inference_mode():
             audio = self.pipe(
                 prompt, audio_length_in_s=duration, num_inference_steps=steps,
-                guidance_scale=2.5, num_waveforms_per_prompt=1, generator=rng,
+                guidance_scale=guidance_scale, num_waveforms_per_prompt=1, generator=rng,
                 callback=on_step, callback_steps=1,
             ).audios[0]
         if gpu:
@@ -193,11 +243,12 @@ class Generator:
         name = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         wav = RESULTS / f"{name}.wav"
         sf.write(wav, audio, self.pipe.vocoder.config.sampling_rate, subtype="PCM_16")
-        _, repo_id, revision, _ = MODELS[model]
         report = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "model": repo_id, "model_revision": revision, "prompt": prompt, "mode": mode,
+            "model": config.repo_id, "model_revision": config.revision,
+            "prompt": prompt, "mode": mode,
             "duration_s": duration, "steps": steps, "seed": seed,
+            "guidance_scale": guidance_scale,
             "load_s": round(load_s, 2), "inference_s": round(inference_s, 2),
             "total_s": round(time.perf_counter() - total_start, 2),
             "peak_vram_allocated_gb": round(torch.cuda.max_memory_allocated() / 1024**3, 3) if gpu else None,
@@ -213,8 +264,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="AudioLDM local diagnostics and benchmark")
     parser.add_argument("--diagnose", action="store_true")
-    parser.add_argument("--prompt", default="A dog barking in a quiet park")
-    parser.add_argument("--mode", choices=["GPU low memory", "GPU direct", "CPU", "GPU ahorro", "GPU directa"], default="GPU low memory")
+    parser.add_argument("--prompt", default="A dog barking")
+    parser.add_argument("--mode", choices=["Auto", "GPU low memory", "GPU direct", "CPU", "GPU ahorro", "GPU directa"], default="Auto")
     parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL)
     parser.add_argument("--duration", type=float, default=5)
     parser.add_argument("--steps", type=int, default=25)

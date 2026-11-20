@@ -1,56 +1,53 @@
-# Local AudioLDM Demo
+# AudioLDM Text-to-Sound Demo
 
-Text description → AudioLDM → WAV clip. A Python interface built with Gradio and accessed through your local browser. No Conda or model training is required.
+A local Python demo that generates sound from a text description. The interface provides four examples, an audio player, and a downloadable benchmark report.
 
-## Windows setup
+## Start on Windows
 
-On each x64 Windows computer, open PowerShell in the folder containing `start.ps1` and run:
+Open PowerShell in this folder and run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-On a fresh copy, the launcher downloads a local Python 3.12 runtime and installs the required packages. It stores the environment under `.cache/runtime`. The first setup needs internet access and disk space for the runtime and packages. Later launches reuse the local environment.
+On a fresh x64 Windows computer, the launcher downloads its own Python and installs the dependencies. Setup and the first model download require internet access. Subsequent launches reuse the local environment and model cache.
 
-The installer selects GPU mode for compatible NVIDIA hardware and uses CPU on other systems. To set up explicitly for CPU, run:
+For an explicit installation, run `install.ps1`. Use `install.ps1 -Device CPU` or `install.ps1 -Device GPU` to select the PyTorch build.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Device CPU
-```
+## Use the demo
 
-Use `-Device GPU` to request the CUDA 12.4 build for a compatible NVIDIA GPU. The application opens [the local interface](http://127.0.0.1:7860). To stop it, press Ctrl+C in the terminal.
+1. Choose a model and enter a sound description or select an example.
+2. Leave **Processing mode** on **Auto**.
+3. Set the duration, generation steps, and seed.
+4. Click **Generate sound**, listen to the result, and optionally download its report.
 
-## Choosing a model
+The models are **Small v2**, **Medium Full**, **Large Full**, and **AudioLDM 2**. AudioLDM 2 is selected by default. Each model keeps its own cached weights.
 
-Choose **Small v2**, **Medium Full**, or **Large Full** in the **Model** dropdown. Small v2 is the default. The next generation uses the selected model, and the benchmark report records its checkpoint.
+Auto selects CPU when CUDA is unavailable, direct GPU execution on GPUs with at least 8 GB of VRAM, and memory-saving GPU execution on smaller GPUs. The manual processing modes remain available. The summary and JSON report show the actual mode used.
 
-The AudioLDM source clone contains the code. The demo downloads the pretrained weights for the selected model from Hugging Face and reuses its local cache. Medium Full requires about 2.6 GB and Large Full about 3.9 GB of downloads before cache reuse.
+## Code structure
 
-To download a model before presenting, run its command in PowerShell from the demo folder after setup:
+- `demo.py` builds the Gradio interface and connects the button to the generator.
+- `engine.py` contains the model configurations, download logic, pipeline loading, generation, and WAV/JSON saving.
+- `install.ps1` prepares Python and dependencies. `start.ps1` opens the demo.
 
-```powershell
-.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model small --download-only
-.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model medium --download-only
-.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model large --download-only
-```
+In `engine.py`, `ModelConfig` gives each checkpoint named settings. `prepare_model()` completes its cache. `Generator.load()` loads or reuses the pipeline, and `Generator.generate()` produces the audio and report. `resolve_mode()` and `configure_memory()` contain the hardware-specific setup.
 
-With its weights cached, the demo can generate audio offline. For an older environment, use `.\.venv-audioldm\Scripts\python.exe` or run `install.ps1` to set up the managed environment.
+## Command-line usage
 
-On GPUs with 4 GB of VRAM or less, Large Full uses finer-grained CPU offloading in **GPU low memory** mode. This can increase generation time.
-
-## Diagnostics and command-line testing
+With the managed environment:
 
 ```powershell
 .\.cache\runtime\venv\Scripts\python.exe .\engine.py --diagnose
-.\.cache\runtime\venv\Scripts\python.exe .\engine.py --prompt "A dog barking in a quiet park" --steps 25 --duration 5
+.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model audioldm2 --download-only
+.\.cache\runtime\venv\Scripts\python.exe .\engine.py --model audioldm2 --prompt "A dog barking" --duration 5 --steps 25 --seed 42
 ```
 
-Add `--repeat 2` to measure the first generation and another generation with the model already loaded in the same process.
+For an older installation, use `.\.venv-audioldm\Scripts\python.exe`. Model keys are `small`, `medium`, `large`, and `audioldm2`. `--mode` accepts `Auto`, `GPU direct`, `GPU low memory`, or `CPU`. Add `--repeat 2` to compare initial and subsequent runs with one loaded pipeline.
 
-Each generation saves a WAV and a JSON report in `audioldm_demo/results`. The report includes GPU, RAM, software versions, seed, steps, timings, and peak CUDA memory allocated/reserved by PyTorch. These measurements do not represent total GPU memory usage. Available RAM in the diagnostics is a point-in-time reading, not a peak measurement.
+## Share the project
 
-## Running on other computers
+Commit the source files, scripts, `requirements.txt`, and `README.md`. The `.gitignore` excludes model caches, runtime environments, and generated results. Each computer prepares its own environment. To reuse downloaded weights, copy `.cache/huggingface` separately.
 
-Clone or copy the demo source and run `start.ps1` on each Windows computer. Let each computer prepare its own environment. You can copy `.cache/huggingface` to reuse downloaded weights. For a live presentation, complete setup and test one generation on the presentation computer beforehand.
+Model weights use the [CC BY-NC-SA 4.0 license](https://huggingface.co/cvssp/audioldm2). The pipeline implementation comes from [Hugging Face Diffusers](https://huggingface.co/docs/diffusers/v0.30.3/en/api/pipelines/audioldm2).
 
-On Linux with Python 3.12, create an environment with `python3.12 -m venv .venv-audioldm`, activate it, install PyTorch from the appropriate index, and then run `pip install -r requirements.txt`. Start the application with `python demo.py`.
