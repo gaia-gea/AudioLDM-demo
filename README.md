@@ -14,6 +14,35 @@ On a fresh x64 Windows computer, the launcher downloads its own Python and insta
 
 For an explicit installation, run `install.ps1`. Use `install.ps1 -Device CPU` or `install.ps1 -Device GPU` to select the PyTorch build.
 
+## Start on Linux
+
+On x86_64 Linux with glibc, such as Ubuntu or Debian, open a terminal in this folder and run:
+
+```bash
+bash start.sh
+```
+
+On first launch, the script downloads its own Python 3.12 and installs the dependencies under `.cache/runtime/linux-x86_64`. It selects a compatible NVIDIA GPU automatically and uses CPU otherwise. Setup requires internet access. Commands `curl`, `tar`, `sha256sum`, `flock`, `awk`, and `getconf` must be available.
+
+To install explicitly for CPU or GPU:
+
+```bash
+bash install.sh cpu
+bash install.sh gpu
+```
+
+Choose one command. GPU installation requires an NVIDIA driver compatible with CUDA 12.4. In auto mode, the installer uses a conservative driver and GPU architecture check, then verifies CUDA with a real tensor operation. It falls back to CPU if that check fails.
+
+The Linux runtime has its own directory, separate from the Windows runtime. Each computer should prepare its own environment. Models remain in the shared `.cache/huggingface` folder.
+
+To download the selected model ahead of time:
+
+```bash
+./.cache/runtime/linux-x86_64/venv/bin/python engine.py --model audioldm2 --download-only
+```
+
+To use a different local port, run `bash start.sh --port 7861`.
+
 ## Use the demo
 
 1. Choose a model and enter a sound description or select an example.
@@ -29,7 +58,8 @@ Auto selects CPU when CUDA is unavailable, direct GPU execution on GPUs with at 
 
 - `demo.py` builds the Gradio interface and connects the button to the generator.
 - `engine.py` contains the model configurations, download logic, pipeline loading, generation, and WAV/JSON saving.
-- `install.ps1` prepares Python and dependencies. `start.ps1` opens the demo.
+- `install.ps1` and `start.ps1` prepare and launch the Windows demo.
+- `install.sh` and `start.sh` provide the same workflow on Linux.
 
 In `engine.py`, `ModelConfig` gives each checkpoint named settings. `prepare_model()` completes its cache. `Generator.load()` loads or reuses the pipeline, and `Generator.generate()` produces the audio and report. `resolve_mode()` and `configure_memory()` contain the hardware-specific setup.
 
